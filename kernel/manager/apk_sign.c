@@ -1,4 +1,5 @@
 #include "util.h"
+#include "compat/kernel_compat.h"
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/gfp.h>
@@ -80,7 +81,7 @@ static bool read_exact(struct file *fp, void *buffer, size_t size, loff_t *pos, 
     if (*pos < 0 || *pos > end || size > (size_t)(end - *pos))
         return false;
 
-    return kernel_read(fp, buffer, size, pos) == (ssize_t)size;
+    return ksu_kernel_read_compat(fp, buffer, size, pos) == (ssize_t)size;
 }
 
 static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t container_end, loff_t *value_end)

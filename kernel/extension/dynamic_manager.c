@@ -11,6 +11,7 @@
  * set/get code paths that manager UI used to call via KSU_IOCTL_MANAGER.
  */
 #include <linux/ctype.h>
+#include "compat/kernel_compat.h"
 #include <linux/fs.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -168,7 +169,7 @@ void ksu_dynamic_manager_load(void)
     fp = filp_open(DYNAMIC_MANAGER_FILE, O_RDONLY, 0);
     if (IS_ERR(fp))
         goto out;
-    read = kernel_read(fp, state, sizeof(*state), &pos);
+    read = ksu_kernel_read_compat(fp, state, sizeof(*state), &pos);
     filp_close(fp, NULL);
     if (read != sizeof(*state) || state->magic != DYNAMIC_MANAGER_MAGIC || state->version != DYNAMIC_MANAGER_VERSION ||
         state->count > KSU_MAX_DYNAMIC_MANAGERS || state->enabled > 1)

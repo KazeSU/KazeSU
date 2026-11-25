@@ -1,3 +1,4 @@
+#include "compat/kernel_compat.h"
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/fs.h>

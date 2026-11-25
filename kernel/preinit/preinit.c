@@ -1,4 +1,5 @@
 #include <linux/err.h>
+#include "compat/kernel_compat.h"
 #include <linux/fcntl.h>
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -49,7 +50,7 @@ void __init ksu_preinit_init(void)
         return;
     }
 
-    written = kernel_write(file, ksu_preinit_runner_start, size, &pos);
+    written = ksu_kernel_write_compat(file, ksu_preinit_runner_start, size, &pos);
     if (written != size) {
         pr_err("preinit: write runner failed: %zd\n", written);
         fput(file);

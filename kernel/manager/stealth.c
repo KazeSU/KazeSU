@@ -11,6 +11,7 @@
  * reloaded on POST_FS_DATA, so it survives an app reinstall.
  */
 #include <linux/cred.h>
+#include "compat/kernel_compat.h"
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/fcntl.h>
@@ -42,7 +43,7 @@ static int ksu_stealth_write(const char *data, size_t len)
 		return PTR_ERR(fp);
 	}
 
-	if (kernel_write(fp, data, len, &off) != (ssize_t)len)
+	if (ksu_kernel_write_compat(fp, data, len, &off) != (ssize_t)len)
 		pr_debug("stealth: short write to %s\n", KSU_STEALTH_PATH);
 
 	filp_close(fp, NULL);
@@ -65,7 +66,7 @@ void ksu_stealth_load(void)
 		return;
 	}
 
-	ksu_stealth_enabled = (kernel_read(fp, &c, 1, &pos) == 1 && c == '1');
+	ksu_stealth_enabled = (ksu_kernel_read_compat(fp, &c, 1, &pos) == 1 && c == '1');
 	filp_close(fp, NULL);
 
 	pr_debug("stealth: loaded, %s\n",

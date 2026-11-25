@@ -100,6 +100,40 @@ bool ksu_is_su_session_fd(const struct file *filp)
     return context && (context->permissions & KSU_DRIVER_PERMISSION_SU_SESSION);
 }
 
+/*
+ * Manual-hook entry point for the reboot syscall.
+ *
+ * Adapted from BakaSU (https://github.com/Baka-SU/BakaSU).  In tracepoint
+ * mode the same magic is caught by a kprobe and the fd install is deferred
+ * with task_work; the manual call site runs in process context, so we can
+ * install the fd directly.
+ */
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+{
+    int fd;
+
+    if (magic1 != KSU_INSTALL_MAGIC1 || magic2 != KSU_INSTALL_MAGIC2)
+        return -EINVAL;
+
+#ifdef CONFIG_KSU_DEBUG
+    pr_info("sys_reboot: intercepted call! magic: 0x%x\n", magic1);
+#endif
+
+    if (!arg || !*arg)
+        return -EINVAL;
+
+    fd = ksu_install_fd();
+    pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
+
+    if (copy_to_user((int __user *)*arg, &fd, sizeof(fd))) {
+        pr_err("install ksu fd reply err\n");
+        ksu_close_fd(fd);
+    }
+
+    return 0;
+}
+
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
 static void ksu_install_fd_tw_func(struct callback_head *cb)
 {
     struct ksu_install_fd_tw *tw = container_of(cb, struct ksu_install_fd_tw, cb);
@@ -144,23 +178,30 @@ static struct kprobe reboot_kp = {
     .symbol_name = REBOOT_SYMBOL,
     .pre_handler = reboot_handler_pre,
 };
+#endif // CONFIG_KSU_TRACEPOINT_HOOK
 
 void __init ksu_supercalls_init(void)
 {
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     int rc;
+#endif
 
     ksu_supercall_dump_commands();
 
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     rc = register_kprobe(&reboot_kp);
     if (rc) {
         pr_err("reboot kprobe failed: %d\n", rc);
     } else {
         pr_info("reboot kprobe registered successfully\n");
     }
+#endif
 }
 
 void __exit ksu_supercalls_exit(void)
 {
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     unregister_kprobe(&reboot_kp);
+#endif
     ksu_supercall_cleanup_state();
 }

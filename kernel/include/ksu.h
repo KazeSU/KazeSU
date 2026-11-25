@@ -4,6 +4,7 @@
 #include <linux/types.h>
 #include <linux/cred.h>
 #include <linux/workqueue.h>
+#include <linux/version.h>
 
 #define KERNEL_SU_VERSION KSU_VERSION
 
@@ -13,7 +14,9 @@ extern bool allow_shell;
 #ifdef MODULE
 extern bool ksu_bundled;
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_POLICY_MUTEX)
 extern struct selinux_policy *backup_sepolicy;
+#endif
 extern bool ksu_no_custom_rc;
 
 // KazeSU kernel su version full strings

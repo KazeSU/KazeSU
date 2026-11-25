@@ -1,7 +1,10 @@
+#include "compat/kernel_compat.h"
 #include "selinux.h"
+#include "selinux_defs.h"
 #include "linux/cred.h"
 #include "linux/sched.h"
 #include "objsec.h"
+#include "security.h"
 #include "linux/version.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
@@ -71,24 +74,16 @@ void setup_ksu_cred(void)
 
 void setenforce(bool enforce)
 {
-#ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-    selinux_state.enforcing = enforce;
-#endif
+    __setenforce(enforce);
 }
 
 bool getenforce(void)
 {
-#ifdef CONFIG_SECURITY_SELINUX_DISABLE
-    if (selinux_state.disabled) {
+    if (is_selinux_disabled()) {
         return false;
     }
-#endif
 
-#ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-    return selinux_state.enforcing;
-#else
-    return true;
-#endif
+    return __is_selinux_enforcing();
 }
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0)

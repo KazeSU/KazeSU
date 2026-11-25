@@ -15,6 +15,11 @@
 #include "manager/throne_tracker.h"
 #include "hook/syscall_hook_manager.h"
 #include "hook/lsm_hook.h"
+#include "hook/setuid_hook.h"
+#include "feature/sucompat.h"
+#ifdef CONFIG_KSU_MANUAL_HOOK
+#include "hook/lsm_hooks.h"
+#endif
 #include "runtime/ksud.h"
 #include "runtime/ksud_boot.h"
 #include "feature/sulog.h"
@@ -100,6 +105,27 @@ module_param(spoof_release, charp, 0);
 static char *spoof_version = NULL;
 module_param(spoof_version, charp, 0);
 
+static void ksu_hook_backend_init(void)
+{
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
+    ksu_syscall_hook_manager_init();
+#else
+    // Manual mode: the syscall handlers are called from patched kernel code.
+    ksu_setuid_hook_init();
+    ksu_sucompat_init();
+#endif
+}
+
+static void ksu_hook_backend_exit(void)
+{
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
+    ksu_syscall_hook_manager_exit();
+#else
+    ksu_sucompat_exit();
+    ksu_setuid_hook_exit();
+#endif
+}
+
 int __init kernelsu_init(void)
 {
     int ret;
@@ -149,6 +175,8 @@ int __init kernelsu_init(void)
     pr_info("initializing symbol resolver\n");
     ksu_init_symbol_resolver();
 
+    ksu_selinux_init();
+
     ret = ksu_selinux_inode_init();
     if (ret) {
         put_cred(ksu_cred);
@@ -160,7 +188,13 @@ int __init kernelsu_init(void)
         ksu_spoof_version(spoof_release, spoof_version);
     }
 
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     ksu_syscall_hook_init();
+#endif
+
+#ifdef CONFIG_KSU_MANUAL_HOOK
+    ksu_lsm_hook_built_in_init();
+#endif
 
     ksu_feature_init();
     ksu_sulog_init();
@@ -191,7 +225,7 @@ int __init kernelsu_init(void)
         ksu_load_allow_list();
         ksu_dynamic_manager_load();
 
-        ksu_syscall_hook_manager_init();
+        ksu_hook_backend_init();
 
         ksu_throne_tracker_init();
         ksu_observer_init();
@@ -210,7 +244,7 @@ int __init kernelsu_init(void)
         }
 
     } else {
-        ksu_syscall_hook_manager_init();
+        ksu_hook_backend_init();
 
         ksu_allowlist_init();
 
@@ -234,7 +268,7 @@ int __init kernelsu_init(void)
 void __exit kernelsu_exit(void)
 {
     // Phase 1: Stop all hooks first to prevent new callbacks
-    ksu_syscall_hook_manager_exit();
+    ksu_hook_backend_exit();
 
     ksu_supercalls_exit();
 

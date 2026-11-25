@@ -2,6 +2,7 @@
 #include "linux/fcntl.h"
 #include "linux/namei.h"
 #include <linux/compiler_types.h>
+#include <linux/binfmts.h>
 #include <linux/preempt.h>
 #include <linux/printk.h>
 #include <linux/mm.h>
@@ -66,6 +67,20 @@ static char __user *empty_user_path(void)
     return userspace_stack_buffer("", sizeof(""));
 }
 
+#ifndef CONFIG_KSU_TRACEPOINT_HOOK
+/*
+ * Manual-hook path: the kernel call sites pass kernel pointers instead of a
+ * pt_regs frame, so we rewrite the filename in place.  Adapted from BakaSU
+ * (https://github.com/Baka-SU/BakaSU), kernel/feature/sucompat.c.
+ */
+static char __user *sh_user_path(void)
+{
+    static const char sh_path[] = SH_PATH;
+
+    return userspace_stack_buffer(sh_path, sizeof(sh_path));
+}
+#endif
+
 static const char su_path[] = SU_PATH;
 
 static bool is_ksud_exists()
@@ -93,7 +108,7 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
 
     char path[sizeof(su_path) + 1];
     memset(path, 0, sizeof(path));
-    strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+    ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
 
     if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
         old_cred = override_creds(ksu_cred);
@@ -128,7 +143,7 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
 
     char path[sizeof(su_path) + 1];
     memset(path, 0, sizeof(path));
-    strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+    ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
 
     if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
         old_cred = override_creds(ksu_cred);
@@ -258,6 +273,125 @@ long ksu_handle_execveat_sucompat(const char __user **filename_user, int orig_nr
     return ksu_handle_execve_sucompat_common(filename_user, (const char __user *const __user *)PT_REGS_PARM3(regs),
                                              PT_REGS_SYSCALL_PARM4(regs), true, orig_nr, regs);
 }
+
+#ifndef CONFIG_KSU_TRACEPOINT_HOOK
+/*
+ * Manual hook entry points.  These are called from the patched kernel source
+ * (see tools/manual_hook_check.mk and docs/old-kernels.md).
+ */
+int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags)
+{
+    char path[sizeof(su_path) + 1] = { 0 };
+    const struct cred *old_cred;
+
+    if (!ksu_su_compat_enabled)
+        return 0;
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val))
+        return 0;
+
+    if (!filename_user || !*filename_user)
+        return 0;
+
+    ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+
+    if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
+        old_cred = override_creds(ksu_cred);
+        if (is_ksud_exists()) {
+            pr_info("ksu_handle_faccessat su->sh!\n");
+            *filename_user = sh_user_path();
+        } else {
+            pr_info("no ksud found, don't process faccessat for su!\n");
+        }
+        revert_creds(old_cred);
+    }
+
+    return 0;
+}
+
+int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
+{
+    char path[sizeof(su_path) + 1] = { 0 };
+    const struct cred *old_cred;
+
+    if (!ksu_su_compat_enabled)
+        return 0;
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val))
+        return 0;
+
+    if (!filename_user || !*filename_user)
+        return 0;
+
+    ksu_strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+
+    if (unlikely(!memcmp(path, su_path, sizeof(su_path)))) {
+        old_cred = override_creds(ksu_cred);
+        if (is_ksud_exists()) {
+            pr_info("ksu_handle_stat su->sh!\n");
+            *filename_user = sh_user_path();
+        } else {
+            pr_info("no ksud found, don't process stat for su!\n");
+        }
+        revert_creds(old_cred);
+    }
+
+    return 0;
+}
+
+int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags)
+{
+    struct filename *filename;
+    struct user_arg_ptr uargv = { .ptr.native = (const char __user *const __user *)argv };
+    const struct cred *old_cred;
+
+    if (!filename_ptr)
+        return 0;
+
+    filename = *filename_ptr;
+    if (IS_ERR_OR_NULL(filename) || !filename->name)
+        return 0;
+
+    // Only the plain execve()/execveat(AT_FDCWD, ..., 0) case is redirected.
+    if (fd && *fd != AT_FDCWD)
+        return 0;
+    if (flags && *flags != 0)
+        return 0;
+
+    // Keep the existing ksud/init/zygote bookkeeping.
+    ksu_handle_execveat_ksud(filename->name, &uargv);
+
+    if (!ksu_su_compat_enabled)
+        return 0;
+
+    if (!ksu_is_allow_uid_for_current(current_uid().val))
+        return 0;
+
+    if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
+        return 0;
+
+    old_cred = override_creds(ksu_cred);
+    if (!is_ksud_exists()) {
+        pr_info("no ksud found, don't process execve for su!\n");
+        revert_creds(old_cred);
+        return 0;
+    }
+    revert_creds(old_cred);
+
+    pr_info("do_execveat_common su found\n");
+
+    escape_with_root_profile();
+    // KSUD_PATH and SU_PATH have the same length, so this stays in place.
+    memcpy((void *)filename->name, KSUD_PATH, sizeof(KSUD_PATH));
+
+    return 0;
+}
+
+void ksu_stop_ksud_execve_hook(void)
+{
+    // No static key in manual mode: the kernel call site stays in place.
+}
+#endif // !CONFIG_KSU_TRACEPOINT_HOOK
 
 // sucompat: permitted process can execute 'su' to gain root access.
 void __init ksu_sucompat_init()

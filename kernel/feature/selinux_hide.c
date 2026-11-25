@@ -1,4 +1,16 @@
+#include "compat/kernel_compat.h"
 #include "selinux_hide.h"
+#include <linux/printk.h>
+#include <linux/version.h>
+
+/*
+ * The hide implementation needs the post-5.7 selinux_policy container,
+ * selinuxfs status page and the newer avc helpers.  On older kernels we
+ * keep the core policy editing in selinux/rules.c and expose no-op
+ * feature entry points instead.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_POLICY_MUTEX)
+
 #include "infra/symbol_resolver.h"
 #include "linux/jump_label.h"
 #include "linux/rcupdate.h"
@@ -1561,3 +1573,28 @@ allow:
     avd->allowed = 0xffffffff;
     goto out;
 }
+
+#else // pre-5.10: selinux_hide is not available
+
+void ksu_selinux_hide_init(void)
+{
+    pr_info("selinux_hide: not supported on this kernel, feature disabled\n");
+}
+
+void ksu_selinux_hide_exit(void)
+{
+}
+
+void ksu_selinux_hide_drop_backup_if_unused(void)
+{
+}
+
+void ksu_selinux_hide_handle_second_stage(void)
+{
+}
+
+void ksu_selinux_hide_handle_post_fs_data(void)
+{
+}
+
+#endif

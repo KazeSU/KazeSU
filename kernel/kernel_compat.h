@@ -1,24 +1,10 @@
-#ifndef __KSU_H_KERNEL_COMPAT
-#define __KSU_H_KERNEL_COMPAT
-
-#include <linux/fs.h>
-#include <linux/version.h>
+#ifndef __KSU_H_KERNEL_COMPAT_LEGACY
+#define __KSU_H_KERNEL_COMPAT_LEGACY
 
 /*
- * ksu_copy_from_user_retry
- * try nofault copy first, if it fails, try with plain
- * paramters are the same as copy_from_user
- * 0 = success
+ * Backwards-compatible include point.  The real old-kernel compatibility
+ * layer lives in compat/kernel_compat.h (adapted from BakaSU).
  */
-static long ksu_copy_from_user_retry(void *to, const void __user *from,
-                                     unsigned long count)
-{
-    long ret = copy_from_user_nofault(to, from, count);
-    if (likely(!ret))
-        return ret;
+#include "compat/kernel_compat.h"
 
-    // we faulted! fallback to slow path
-    return copy_from_user(to, from, count);
-}
-
-#endif
+#endif // __KSU_H_KERNEL_COMPAT_LEGACY

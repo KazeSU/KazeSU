@@ -1,16 +1,20 @@
+#include "compat/kernel_compat.h"
 #include "ss/avtab.h"
 #include "ss/constraint.h"
 #include "ss/ebitmap.h"
 #include "ss/hashtab.h"
 #include "ss/policydb.h"
 #include "ss/services.h"
+#include "security.h"
 #include <linux/gfp.h>
 #include <linux/printk.h>
+#include <linux/rwlock.h>
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <linux/vmalloc.h>
 
 #include "sepolicy.h"
+#include "selinux.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ss/symtab.h"
 
@@ -945,8 +949,109 @@ bool ksu_genfscon(struct policydb *db, const char *fs_name, const char *path, co
     return add_genfscon(db, fs_name, path, ctx);
 }
 
+// ======== legacy policydb (pre-5.10) ========
+// Adapted from BakaSU (https://github.com/Baka-SU/BakaSU),
+// kernel/selinux/sepolicy.c.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && !defined(KSU_COMPAT_HAS_POLICY_MUTEX)
+
+extern rwlock_t *ksu_policy_rwlock_ptr;
+
+static inline void ksu_lock_policydb_read(void)
+{
+#if defined(KSU_COMPAT_USE_SELINUX_STATE)
+    read_lock(&selinux_state.ss->policy_rwlock);
+#else
+    /* Resolution can fail on old trees; the rules run before userspace
+     * can reload the policy, so running unlocked is still safe there. */
+    if (ksu_policy_rwlock_ptr)
+        read_lock(ksu_policy_rwlock_ptr);
+#endif
+}
+
+static inline void ksu_unlock_policydb_read(void)
+{
+#if defined(KSU_COMPAT_USE_SELINUX_STATE)
+    read_unlock(&selinux_state.ss->policy_rwlock);
+#else
+    if (ksu_policy_rwlock_ptr)
+        read_unlock(ksu_policy_rwlock_ptr);
+#endif
+}
+
+void ksu_destroy_policydb(struct policydb *db)
+{
+    policydb_destroy(db);
+}
+
+/* Returns the written length, or a negative errno. */
+int ksu_dup_policydb(struct policydb *old_db, struct policydb *new_db)
+{
+    struct policy_file fp = { 0 };
+    void *data;
+    int ret = 0;
+    int len;
+
+    ksu_lock_policydb_read();
+    len = old_db->len + (size_t)old_db->p_types.nprim * (sizeof(u32) + sizeof(u64));
+    ksu_unlock_policydb_read();
+
+    data = vmalloc(len);
+    if (!data) {
+        pr_err("alloc policy buffer len %d\n", len);
+        return -ENOMEM;
+    }
+
+    fp.data = data;
+    fp.len = len;
+
+    ksu_lock_policydb_read();
+    ret = policydb_write(old_db, &fp);
+    if (ret) {
+        pr_err("sepolicy: policydb_write: %d\n", ret);
+        ksu_unlock_policydb_read();
+        goto out_free_data;
+    }
+    len -= fp.len;
+    ksu_unlock_policydb_read();
+
+    // Android does not persist these flags through policydb_write().
+    // https://android-review.googlesource.com/c/kernel/common/+/3009995
+    // 4*2+8+4
+    if (len >= 20 + (int)sizeof(u32)) {
+        u32 *config_ptr = (u32 *)((unsigned long)data + 20);
+#ifdef KSU_COMPAT_HAS_POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE
+        if (old_db->android_netlink_route)
+            *config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE;
+#endif
+#ifdef KSU_COMPAT_HAS_POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH
+        if (old_db->android_netlink_getneigh)
+            *config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH;
+#endif
+    }
+
+    fp.data = data;
+    fp.len = len;
+
+    ret = policydb_read(new_db, &fp);
+    if (ret) {
+        pr_err("sepolicy: policydb_read: %d\n", ret);
+        goto out_free_data;
+    }
+
+    new_db->len = len;
+    vfree(data);
+    return len;
+
+out_free_data:
+    vfree(data);
+    return ret;
+}
+
+#endif // legacy policydb
+
 // ======== sepolicy ========
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_POLICY_MUTEX)
 void ksu_destroy_sepolicy(struct selinux_policy *pol)
 {
     policydb_destroy(&pol->policydb);
@@ -1032,3 +1137,4 @@ out_free_data:
 
     return ERR_PTR(ret);
 }
+#endif // 5.10+ selinux_policy

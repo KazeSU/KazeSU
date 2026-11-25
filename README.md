@@ -84,6 +84,9 @@ kernel extension center, without a pile of companion apps.
 ## Compatibility
 
 - GKI 2.0 devices (kernel 5.10+) are supported out of the box.
+- Kernels that cannot use the GKI tracepoint redirect can build with the
+  optional manual-hook method; see [old kernels](docs/old-kernels.md) for the
+  required kernel patch points and the current pre-5.10 limits.
 - Older kernels (minimum 4.14+) work, but you must build the kernel yourself;
   with backports, 3.4–3.18 kernels can be supported.
 - Architectures: `arm64-v8a`, `armeabi-v7a`, `x86_64`, `riscv64`.
@@ -93,7 +96,8 @@ kernel extension center, without a pile of companion apps.
 | Scenario | Method | Notes |
 | --- | --- | --- |
 | GKI devices (kernel 5.10+) | LKM mode | Recommended; flash the `.ko` matching your KMI. |
-| Non-GKI / old kernels (3.0+) | Compile the kernel | See [kernel integration](#kernel-integration). |
+| Non-GKI 5.10+ | Manual hook | `CONFIG_KSU_MANUAL_HOOK=y`; patch the call sites in [docs/old-kernels.md](docs/old-kernels.md). |
+| Non-GKI / old kernels (4.19+) | Compile the kernel | See [kernel integration](#kernel-integration). Pre-5.10 uses the legacy SELinux policy path; `selinux_hide` is unavailable there. |
 | KPM features required | `CONFIG_KPM=y` | Non-GKI also needs `CONFIG_KALLSYMS=y` and `CONFIG_KALLSYMS_ALL=y`. |
 
 ## Install
@@ -169,6 +173,10 @@ just bk   # ksud only
   stays under the same license and this credit is part of that compliance.
 - [SukiSU Nova](https://github.com/SukiSU-Nova/SukiSU-Nova) and
   [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra): fork lineage.
+- [BakaSU](https://github.com/Baka-SU/BakaSU): old-kernel compatibility layer,
+  manual-hook scaffolding and LSM helpers under `kernel/compat/`,
+  `kernel/hook/lsm_hooks.c` and `kernel/tools/`. See
+  [docs/old-kernels.md](docs/old-kernels.md).
 - [/xxksu](https://github.com/backslashxx/KernelSU): kernel compatibility reference.
 - [susfs](https://gitlab.com/simonpunk/susfs4ksu): hiding patches and userspace modules.
 - [KernelPatch](https://github.com/bmax121/KernelPatch): KPM foundation.

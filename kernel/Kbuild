@@ -1,5 +1,7 @@
 kernelsu-objs := core/init.o
 
+kernelsu-objs += compat/kernel_compat.o
+
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/module_blacklist.o
 kernelsu-objs += feature/mount_hide.o
@@ -8,18 +10,35 @@ kernelsu-objs += feature/sucompat.o
 
 kernelsu-objs += hook/lsm_hook.o
 kernelsu-objs += hook/setuid_hook.o
+kernelsu-objs += hook/tp_marker.o
+
+# Hook-method selection.  The tracepoint redirect is the default and needs the
+# kprobe/tracepoint machinery; manual mode instead relies on the call sites
+# patched into the kernel source (see tools/manual_hook_check.mk).
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
 kernelsu-objs += hook/syscall_event_bridge.o
 kernelsu-objs += hook/syscall_hook_manager.o
-kernelsu-objs += hook/tp_marker.o
+endif
+
+ifeq ($(CONFIG_KSU_MANUAL_HOOK),y)
+kernelsu-objs += hook/lsm_hooks.o
+endif
+
 ifeq ($(CONFIG_ARM64),y)
 kernelsu-objs += hook/arm64/patch_memory.o
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
 kernelsu-objs += hook/arm64/syscall_hook.o
+endif
 else ifeq ($(CONFIG_X86_64),y)
 kernelsu-objs += hook/x86_64/patch_memory.o
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
 kernelsu-objs += hook/x86_64/syscall_hook.o
+endif
 else ifeq ($(CONFIG_RISCV),y)
 kernelsu-objs += hook/riscv64/patch_memory.o
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
 kernelsu-objs += hook/riscv64/syscall_hook.o
+endif
 endif
 
 kernelsu-objs += infra/file_wrapper.o
@@ -30,10 +49,23 @@ kernelsu-objs += infra/symbol_resolver.o
 
 ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 kernelsu-objs += manager/apk_sign.o
-kernelsu-objs += manager/pkg_observer.o
 kernelsu-objs += manager/throne_tracker.o
 kernelsu-objs += extension/dynamic_manager.o
 kernelsu-objs += extension/dynamic_sig_fallback.o
+endif
+
+# Old kernels (< 6.8) cannot rely on the fsnotify packages.list observer, so
+# manual-hook mode installs an inode_rename LSM hook instead (see hook/lsm_hooks.c).
+ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
+kernelsu-objs += manager/pkg_observer.o
+else
+ifeq ($(shell test \( $(VERSION) -lt 6 -o \( $(VERSION) -eq 6 -a $(PATCHLEVEL) -lt 8 \) \) && echo y),y)
+# lsm_hooks.o (added above) supplies the rename observer on old kernels.
+else
+kernelsu-objs += manager/pkg_observer.o
+endif
+endif
 endif
 
 ifeq ($(CONFIG_KSU_STEALTH),y)
@@ -132,10 +164,32 @@ endif
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
 
+# The compat/check makefiles log with $(REPO_NAME); define it before they are
+# included.  The full version block below uses := and overrides these.
+REPO_OWNER ?= KazeSU
+REPO_NAME ?= KazeSU
+KSU_SRC ?= $(KSU_KERNEL_DIR)
+
+# Old-kernel compatibility probes and manual-hook call-site checks.
+include $(KSU_KERNEL_DIR)/tools/kernel_compat.mk
+ifeq ($(CONFIG_KSU_MANUAL_HOOK),y)
+include $(KSU_KERNEL_DIR)/tools/manual_hook_check.mk
+endif
+
+# selinux_hide resolves its targets through kallsyms.  On manual-hook trees
+# without CONFIG_KALLSYMS_ALL, make sure the needed symbols were exported;
+# keep the default tracepoint build's behaviour unchanged.
+ifeq ($(CONFIG_KSU_MANUAL_HOOK),y)
+ifneq ($(CONFIG_KALLSYMS_ALL),y)
+include $(KSU_KERNEL_DIR)/tools/static_export_check.mk
+endif
+endif
+
 # preinit runner: a static nolibc binary embedded into kernelsu, see preinit/.
 # It is built against the installed UAPI headers of the target kernel
 # (CONFIG_HEADERS_INSTALL, enabled by gki_defconfig).
 KSU_UAPI_INC := $(objtree)/usr/include
+ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
 ifneq ($(wildcard $(KSU_UAPI_INC)/linux/unistd.h),)
 kernelsu-objs += preinit/preinit.o
 kernelsu-objs += preinit/blob.o
@@ -174,6 +228,12 @@ asflags-y += -DKSU_PREINIT_RUNNER_BIN=\"$(obj)/preinit/runner.elf\"
 else
 $(warning -- KernelSU: $(KSU_UAPI_INC) not found, preinit disabled)
 ccflags-y += -DKSU_NO_PREINIT
+endif
+else
+# The manual hook replaces the execve path at the source level and has no
+# way to hand PID 1 the runner, so preinit is a tracepoint-only feature.
+ccflags-y += -DKSU_NO_PREINIT
+$(info -- KernelSU: manual hook selected, preinit disabled)
 endif
 
 obj-$(CONFIG_KSU) += kernelsu.o

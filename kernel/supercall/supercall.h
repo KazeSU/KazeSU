@@ -26,4 +26,8 @@ bool ksu_is_su_session_fd(const struct file *filp);
 
 void ksu_supercalls_init(void);
 void ksu_supercalls_exit(void);
+
+// Manual-hook entry point for the reboot syscall magic.
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+
 #endif // __KSU_H_SUPERCALL

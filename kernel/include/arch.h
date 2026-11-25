@@ -22,12 +22,19 @@
 #define __PT_IP_REG pc
 #define __PT_ORIG_SYSCALL_REG regs[8]
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 #define REBOOT_SYMBOL "__arm64_sys_reboot"
 #define SYS_READ_SYMBOL "__arm64_sys_read"
 #define SYS_EXECVE_SYMBOL "__arm64_sys_execve"
 // https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/scripts/syscalltbl.sh;l=57;drc=9142be9e6443fd641ca37f820efe00d9cd890eb1
 // https://cs.android.com/android/kernel/superproject/+/common-android-mainline:common/scripts/syscall.tbl;l=104;drc=b36d4b6aa88ef039647228b98c59a875e92f8c8e
 #define SYS_FSTAT_SYMBOL "__arm64_sys_newfstat"
+#else
+#define REBOOT_SYMBOL "sys_reboot"
+#define SYS_READ_SYMBOL "sys_read"
+#define SYS_EXECVE_SYMBOL "sys_execve"
+#define SYS_FSTAT_SYMBOL "compat_sys_newfstat"
+#endif
 
 #elif defined(__x86_64__)
 
@@ -45,11 +52,18 @@
 #define __PT_SP_REG sp
 #define __PT_IP_REG ip
 #define __PT_ORIG_SYSCALL_REG orig_ax
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 #define REBOOT_SYMBOL "__x64_sys_reboot"
 #define SYS_READ_SYMBOL "__x64_sys_read"
 #define SYS_EXECVE_SYMBOL "__x64_sys_execve"
 #define SYS_FSTAT_SYMBOL "__x64_sys_newfstat"
-
+#else
+#define REBOOT_SYMBOL "sys_reboot"
+#define SYS_READ_SYMBOL "sys_read"
+#define SYS_EXECVE_SYMBOL "sys_execve"
+#define SYS_FSTAT_SYMBOL "compat_sys_newfstat"
+#endif
 #elif defined(__riscv)
 
 #define __PT_PARM1_REG a0
@@ -101,6 +115,20 @@
 #define PT_REGS_SP(x) (__PT_REGS_CAST(x)->__PT_SP_REG)
 #define PT_REGS_IP(x) (__PT_REGS_CAST(x)->__PT_IP_REG)
 #define PT_REGS_ORIG_SYSCALL(x) (__PT_REGS_CAST(x)->__PT_ORIG_SYSCALL_REG)
+
+/*
+ * "native" aliases used by the old-kernel compat layer (compat/kernel_compat.h).
+ * KazeSU does not yet decode 32-bit compat syscall frames on arm64, so these
+ * are the plain native slots; keeping the aliases lets the BakaSU-derived
+ * ksyscall()/arch helpers compile unchanged.
+ */
+#define PT_REGS_NATIVE_PARM1(x) PT_REGS_PARM1(x)
+#define PT_REGS_NATIVE_SYSCALL_PARM1(x) PT_REGS_SYSCALL_PARM1(x)
+#define PT_REGS_NATIVE_PARM2(x) PT_REGS_PARM2(x)
+#define PT_REGS_NATIVE_PARM3(x) PT_REGS_PARM3(x)
+#define PT_REGS_NATIVE_SYSCALL_PARM4(x) PT_REGS_SYSCALL_PARM4(x)
+#define PT_REGS_NATIVE_PARM5(x) PT_REGS_PARM5(x)
+#define PT_REGS_NATIVE_PARM6(x) PT_REGS_PARM6(x)
 
 #define PT_REAL_REGS(regs) ((struct pt_regs *)PT_REGS_PARM1(regs))
 

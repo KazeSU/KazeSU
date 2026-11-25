@@ -21,6 +21,7 @@
 #include <linux/stat.h>
 
 #include "arch.h"
+#include "compat/kernel_compat.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
 #include "runtime/ksud.h"
@@ -52,10 +53,9 @@ static const char KERNEL_SU_RC[] =
     "\n";
 // clang-format on
 
-static void stop_init_rc_hook();
-static void stop_execve_hook();
-
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
 static struct work_struct stop_input_hook_work;
+#endif
 
 #define MAX_ARG_STRINGS 0x7FFFFFFF
 struct user_arg_ptr {
@@ -138,7 +138,7 @@ static bool check_argv(struct user_arg_ptr argv, int index, const char *expected
     if (!p || IS_ERR(p))
         goto fail;
 
-    if (strncpy_from_user_nofault(buf, p, buf_len) <= 0)
+    if (ksu_strncpy_from_user_nofault(buf, p, buf_len) <= 0)
         goto fail;
 
     buf[buf_len - 1] = '\0';
@@ -267,7 +267,7 @@ static void load_module_rc_once(void)
         goto out_close_file;
     }
 
-    r = kernel_read(f, module_rc_buf, fsize, &pos);
+    r = ksu_kernel_read_compat(f, module_rc_buf, fsize, &pos);
 
     if (r <= 0) {
         pr_err("module rc: read failed: %zd\n", r);
@@ -425,12 +425,26 @@ static bool is_init_rc(struct file *fp)
         return false;
     }
 
-    if (strcmp(dpath, "/system/etc/init/hw/init.rc")) {
+    if (strcmp(dpath, "/system/etc/init/hw/init.rc") && strcmp(dpath, "/init.rc")) {
         return false;
     }
 
     return true;
 }
+
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
+static void stop_init_rc_hook(void)
+{
+    ksu_syscall_table_unhook(__NR_read);
+    ksu_syscall_table_unhook(__NR_fstat);
+    pr_info("unregister init_rc syscall hook\n");
+}
+#else
+static void stop_init_rc_hook(void)
+{
+    /* init.rc is proxied through the patched read path / LSM helper. */
+}
+#endif
 
 static void ksu_install_rc_hook(struct file *file)
 {
@@ -471,14 +485,27 @@ static void ksu_install_rc_hook(struct file *file)
     file->f_op = &fops_proxy;
 }
 
-static void ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
+int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr)
 {
     struct file *file = fget(fd);
     if (!file) {
-        return;
+        return 0;
     }
     ksu_install_rc_hook(file);
     fput(file);
+    return 0;
+}
+
+/*
+ * Manual-hook variant used by the LSM file_permission helper and by kernels
+ * that patch the read path directly.
+ */
+void ksu_handle_initrc(struct file *file)
+{
+    if (!file)
+        return;
+
+    ksu_install_rc_hook(file);
 }
 
 static unsigned int volumedown_pressed_count = 0;
@@ -570,6 +597,7 @@ void ksu_execveat_hook_ksud(const struct pt_regs *regs)
     ksu_execve_hook_ksud_common(filename_user, argv_user);
 }
 
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
 static long (*orig_sys_read)(const struct pt_regs *regs);
 static long ksu_sys_read(const struct pt_regs *regs)
 {
@@ -580,47 +608,89 @@ static long ksu_sys_read(const struct pt_regs *regs)
     ksu_handle_sys_read(fd, buf_ptr, count_ptr);
     return orig_sys_read(regs);
 }
+#endif
 
-static long (*orig_sys_fstat)(const struct pt_regs *regs);
-static long ksu_sys_fstat(const struct pt_regs *regs)
+static void ksu_adjust_init_rc_size(void __user *st_size_ptr, size_t size_len)
 {
-    unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
-    void __user *statbuf = (void __user *)PT_REGS_PARM2(regs);
-    bool is_rc = false;
-    long ret;
+    long size, new_size;
+    size_t extra = ksu_rc_len + module_rc_len;
 
+    if (!st_size_ptr)
+        return;
+
+    if (!ksu_copy_from_user_nofault(&size, st_size_ptr, size_len)) {
+        new_size = size + extra;
+        pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)\n", size, new_size, ksu_rc_len, module_rc_len);
+        if (!ksu_copy_to_user_nofault(st_size_ptr, &new_size, size_len)) {
+            pr_info("added rc len\n");
+        } else {
+            pr_err("add rc len failed: statbuf 0x%lx\n", (unsigned long)st_size_ptr);
+        }
+    } else {
+        pr_err("read statbuf 0x%lx failed\n", (unsigned long)st_size_ptr);
+    }
+}
+
+static bool ksu_stat_is_init_rc(unsigned int fd)
+{
     struct file *file = fget(fd);
+    bool is_rc = false;
+
     if (file) {
         if (is_init_rc(file)) {
-            pr_info("stat init.rc");
+            pr_info("stat init.rc\n");
             is_rc = true;
             load_module_rc_once();
         }
         fput(file);
     }
 
-    ret = orig_sys_fstat(regs);
+    return is_rc;
+}
 
-    if (is_rc) {
-        void __user *st_size_ptr = statbuf + offsetof(struct stat, st_size);
-        long size, new_size;
-        size_t extra = ksu_rc_len + module_rc_len;
-        if (!copy_from_user_nofault(&size, st_size_ptr, sizeof(long))) {
-            new_size = size + extra;
-            pr_info("adding rc len: %ld -> %ld (static=%zu module=%zu)", size, new_size, ksu_rc_len, module_rc_len);
-            if (!copy_to_user_nofault(st_size_ptr, &new_size, sizeof(long))) {
-                pr_info("added rc len");
-            } else {
-                pr_err("add rc len failed: statbuf 0x%lx", (unsigned long)st_size_ptr);
-            }
-        } else {
-            pr_err("read statbuf 0x%lx failed", (unsigned long)st_size_ptr);
-        }
-    }
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
+static long (*orig_sys_fstat)(const struct pt_regs *regs);
+static long ksu_sys_fstat(const struct pt_regs *regs)
+{
+    unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
+    void __user *statbuf = (void __user *)PT_REGS_PARM2(regs);
+    bool is_rc = ksu_stat_is_init_rc(fd);
+    long ret = orig_sys_fstat(regs);
+
+    if (is_rc)
+        ksu_adjust_init_rc_size(statbuf + offsetof(struct stat, st_size), sizeof(long));
 
     return ret;
 }
+#endif
 
+#ifndef CONFIG_KSU_TRACEPOINT_HOOK
+/*
+ * Manual-hook variants called from the patched fs/stat.c return paths.
+ * Adapted from BakaSU (https://github.com/Baka-SU/BakaSU).
+ */
+void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr)
+{
+    if (!fd || !statbuf_ptr || !*statbuf_ptr)
+        return;
+
+    if (ksu_stat_is_init_rc((unsigned int)*fd))
+        ksu_adjust_init_rc_size((void __user *)*statbuf_ptr + offsetof(struct stat, st_size), sizeof(long));
+}
+
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr)
+{
+    if (!fd || !statbuf_ptr || !*statbuf_ptr)
+        return;
+
+    if (ksu_stat_is_init_rc((unsigned int)*fd))
+        ksu_adjust_init_rc_size((void __user *)*statbuf_ptr + offsetof(struct stat64, st_size), sizeof(long));
+}
+#endif
+#endif // !CONFIG_KSU_TRACEPOINT_HOOK
+
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
 static int input_handle_event_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
     unsigned int *type = (unsigned int *)&PT_REGS_PARM2(regs);
@@ -638,27 +708,24 @@ static void do_stop_input_hook(struct work_struct *work)
 {
     unregister_kprobe(&input_event_kp);
 }
-
-static void stop_init_rc_hook()
-{
-    ksu_syscall_table_unhook(__NR_read);
-    ksu_syscall_table_unhook(__NR_fstat);
-    pr_info("unregister init_rc syscall hook\n");
-}
+#endif
 
 void ksu_stop_input_hook_runtime(void)
 {
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     static bool input_hook_stopped = false;
     if (input_hook_stopped) {
         return;
     }
     input_hook_stopped = true;
     schedule_work(&stop_input_hook_work);
+#endif
 }
 
 // ksud: module support
 void __init ksu_ksud_init()
 {
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     int ret;
 
     ksu_syscall_table_hook(__NR_read, ksu_sys_read, &orig_sys_read);
@@ -668,14 +735,19 @@ void __init ksu_ksud_init()
     pr_info("ksud: input_event_kp: %d\n", ret);
 
     INIT_WORK(&stop_input_hook_work, do_stop_input_hook);
+#else
+    pr_info("ksud: manual hook mode, kernel call sites provide read/fstat/input hooks\n");
+#endif
 }
 
 void __exit ksu_ksud_exit()
 {
+#ifdef CONFIG_KSU_TRACEPOINT_HOOK
     // TODO:
     // this should be done before unregister vfs_read_kp
     // stop_init_rc_hook();
     unregister_kprobe(&input_event_kp);
+#endif
 
     if (module_rc_buf) {
         free_module_rc();
