@@ -26,18 +26,6 @@
 #define KSU_SULOG_MAX_ARG_CHUNK 256U
 #define KSU_SULOG_MAX_FILENAME_LEN 256U
 
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-    bool is_compat;
-#endif
-    union {
-        const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-        const compat_uptr_t __user *compat;
-#endif
-    } ptr;
-};
-
 static struct ksu_event_queue sulog_queue;
 
 struct ksu_sulog_pending_event {

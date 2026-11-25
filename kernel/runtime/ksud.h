@@ -5,23 +5,10 @@
 #include <linux/fs.h>
 #include <linux/stat.h>
 #include <linux/types.h>
-#ifdef CONFIG_COMPAT
-#include <linux/compat.h>
-#endif
 
 #define KSUD_PATH "/data/adb/ksud"
 
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-    bool is_compat;
-#endif
-    union {
-        const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-        const compat_uptr_t __user *compat;
-#endif
-    } ptr;
-};
+struct user_arg_ptr;
 
 void ksu_ksud_init();
 void ksu_ksud_exit();
