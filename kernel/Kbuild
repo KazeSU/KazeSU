@@ -24,6 +24,15 @@ ifeq ($(CONFIG_KSU_MANUAL_HOOK),y)
 kernelsu-objs += hook/lsm_hooks.o
 endif
 
+# C sources test the hook mode with #ifdef, but external-module (LKM/DDK)
+# builds receive CONFIG_KSU_* only as make variables.  Mirror the selected
+# mode as a compiler define; tracepoint is the default when manual is off.
+ifeq ($(CONFIG_KSU_MANUAL_HOOK),y)
+ccflags-y += -DCONFIG_KSU_MANUAL_HOOK=1
+else
+ccflags-y += -DCONFIG_KSU_TRACEPOINT_HOOK=1
+endif
+
 ifeq ($(CONFIG_ARM64),y)
 kernelsu-objs += hook/arm64/patch_memory.o
 ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK),y)
