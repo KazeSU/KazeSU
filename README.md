@@ -181,3 +181,7 @@ just bk   # ksud only
 - [susfs](https://gitlab.com/simonpunk/susfs4ksu): hiding patches and userspace modules.
 - [KernelPatch](https://github.com/bmax121/KernelPatch): KPM foundation.
 - ShirkNeko and the SukiSU Nova maintainers for the base this branch is rebased on.
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=KazeSU/KazeSU&type=Date)](https://star-history.com/#KazeSU/KazeSU&Date)
